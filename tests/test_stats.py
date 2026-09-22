@@ -5,6 +5,7 @@ for the bundled datasets, so any change to the analysis shows up here.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 from scipy import stats as scipy_stats
 
@@ -15,6 +16,7 @@ from abtest.data import (
     load_aa_test,
     load_ab_test,
     remove_outliers,
+    split_groups,
 )
 
 ALPHA = 0.05
@@ -162,3 +164,83 @@ def test_aov_comparison_matches_original_script(cleaned):
     assert aov.interpretation == (
         "Statistically significant increase in AOV observed in experimental group."
     )
+
+
+# --- effect size ---------------------------------------------------------
+
+
+def test_cohens_d_sign_and_magnitude():
+    rng = np.random.default_rng(0)
+    # A known 0.5-SD shift between two large, equal-variance normal samples.
+    control = rng.normal(0, 1, 5000)
+    experimental = rng.normal(0.5, 1, 5000)
+
+    d = stats._cohens_d(control, experimental)
+
+    assert d == pytest.approx(0.5, abs=0.05)
+
+
+def test_estimate_effect_size_diff_and_lift(ab_test):
+    control_mean, experimental_mean = (
+        s.mean() for s in split_groups(ab_test, "order_value")
+    )
+
+    effect = stats.estimate_effect_size(ab_test, n_resamples=200)
+
+    assert effect.diff == pytest.approx(experimental_mean - control_mean, abs=1e-6)
+    assert effect.lift_pct == pytest.approx(
+        100 * (experimental_mean - control_mean) / control_mean, abs=1e-6
+    )
+    assert effect.ci_low < effect.diff < effect.ci_high
+
+
+def test_estimate_effect_size_matches_original_data(cleaned):
+    effect = stats.estimate_effect_size(cleaned)
+
+    assert effect.diff == pytest.approx(6.31, abs=5e-3)
+    assert effect.lift_pct == pytest.approx(20.65, abs=5e-2)
+    assert effect.cohens_d == pytest.approx(0.42, abs=5e-3)
+    # A positive-diff bootstrap CI that excludes 0, consistent with compare_aov
+    # finding a significant difference on the same (cleaned) data.
+    assert effect.ci_low > 0
+
+
+# --- constant-offset detection --------------------------------------------
+
+
+def test_detect_constant_offset_finds_a_real_offset():
+    sample_a = pd.Series([10.0, 20.0, 30.0])
+    sample_b = sample_a + 4.0
+
+    assert stats.detect_constant_offset(sample_a, sample_b) == pytest.approx(4.0)
+
+
+def test_detect_constant_offset_ignores_row_order():
+    # Same constant offset, but sample_b's rows are shuffled relative to
+    # sample_a -- still a constant shift once sorted, so still detected.
+    sample_a = pd.Series([10.0, 20.0, 30.0])
+    sample_b = pd.Series([34.0, 14.0, 24.0])
+
+    assert stats.detect_constant_offset(sample_a, sample_b) == pytest.approx(4.0)
+
+
+def test_detect_constant_offset_returns_none_for_real_variation():
+    rng = np.random.default_rng(0)
+    sample_a = pd.Series(rng.normal(10, 1, 200))
+    sample_b = pd.Series(rng.normal(14, 1, 200))
+
+    assert stats.detect_constant_offset(sample_a, sample_b) is None
+
+
+def test_detect_constant_offset_returns_none_for_different_lengths():
+    assert stats.detect_constant_offset(pd.Series([1.0, 2.0]), pd.Series([1.0])) is None
+
+
+def test_detect_constant_offset_matches_the_bundled_datasets():
+    aa_test = load_aa_test()
+    assert stats.detect_constant_offset(
+        aa_test["Sample 1"], aa_test["Sample 2"]
+    ) == pytest.approx(4.0, abs=5e-3)
+
+    control, experimental = split_groups(load_ab_test(), "order_value")
+    assert stats.detect_constant_offset(control, experimental) == pytest.approx(6.0, abs=5e-3)

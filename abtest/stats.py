@@ -8,6 +8,7 @@ Streamlit app or a test.
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 from scipy import stats
 from statsmodels.stats.power import tt_ind_solve_power
@@ -56,6 +57,22 @@ class OrderValueSummary:
     mean: float
     std: float
     max: float
+
+
+@dataclass(frozen=True)
+class EffectSize:
+    """Practical size of the AOV difference: a dollar lift with a bootstrap
+    confidence interval (no normality assumption needed), plus Cohen's d
+    computed on the log-transformed values that justify compare_aov's
+    parametric test.
+    """
+
+    diff: float
+    lift_pct: float
+    ci_low: float
+    ci_high: float
+    confidence: float
+    cohens_d: float
 
 
 @dataclass(frozen=True)
@@ -178,3 +195,78 @@ def compare_aov(ab_test: pd.DataFrame, alpha: float) -> AovComparison:
         control_aov=float(control.mean()),
         experimental_aov=float(experimental.mean()),
     )
+
+
+def _cohens_d(sample_a: np.ndarray, sample_b: np.ndarray) -> float:
+    """Standardized mean difference, pooling both samples' variances."""
+    n_a, n_b = len(sample_a), len(sample_b)
+    pooled_std = math.sqrt(
+        ((n_a - 1) * sample_a.var(ddof=1) + (n_b - 1) * sample_b.var(ddof=1))
+        / (n_a + n_b - 2)
+    )
+    return float((sample_b.mean() - sample_a.mean()) / pooled_std)
+
+
+def estimate_effect_size(
+    ab_test: pd.DataFrame,
+    confidence: float = 0.95,
+    n_resamples: int = 9999,
+    random_state: int | None = 0,
+) -> EffectSize:
+    """
+    How big the AOV difference actually is, not just whether it's significant.
+
+    The dollar lift and its confidence interval come from bootstrapping the
+    raw order values directly, so they carry no normality assumption. Cohen's
+    d is computed on the log-transformed values instead, since that's the
+    distribution compare_aov's t-test already relies on being ~normal.
+    """
+    control, experimental = split_groups(ab_test, "order_value")
+    control_arr, experimental_arr = control.to_numpy(), experimental.to_numpy()
+
+    diff = float(experimental_arr.mean() - control_arr.mean())
+    lift_pct = diff / float(control_arr.mean()) * 100
+
+    boot = stats.bootstrap(
+        (control_arr, experimental_arr),
+        statistic=lambda c, e, axis=-1: e.mean(axis=axis) - c.mean(axis=axis),
+        confidence_level=confidence,
+        n_resamples=n_resamples,
+        method="basic",
+        vectorized=True,
+        random_state=random_state,
+    )
+
+    log_control, log_experimental = split_groups(
+        add_log_order_value(ab_test), "log_order_value"
+    )
+
+    return EffectSize(
+        diff=diff,
+        lift_pct=lift_pct,
+        ci_low=float(boot.confidence_interval.low),
+        ci_high=float(boot.confidence_interval.high),
+        confidence=confidence,
+        cohens_d=_cohens_d(log_control.to_numpy(), log_experimental.to_numpy()),
+    )
+
+
+def detect_constant_offset(
+    sample_a: pd.Series,
+    sample_b: pd.Series,
+    tol: float = 0.01,
+) -> float | None:
+    """
+    Check whether sample_b is sample_a shifted by one constant amount rather
+    than genuine independent variation.
+
+    Comparing sorted values catches this whether the samples are row-paired
+    (a constant added to each matched pair) or just two unpaired samples of
+    the same size drawn from the same shifted distribution. Returns the
+    constant if the two samples match within tol at every quantile, else
+    None.
+    """
+    if len(sample_a) != len(sample_b):
+        return None
+    sorted_diff = np.sort(sample_b.to_numpy()) - np.sort(sample_a.to_numpy())
+    return float(sorted_diff.mean()) if sorted_diff.std() < tol else None
