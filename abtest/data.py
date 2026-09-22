@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 CONTROL = "Control"
 EXPERIMENTAL = "Experimental"
