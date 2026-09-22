@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from abtest.data import CONTROL, EXPERIMENTAL, add_log_order_value
+from abtest.data import CONTROL, EXPERIMENTAL, OUTLIER_PERCENTILE, add_log_order_value
 
 Theme = Literal["light", "dark"]
 
@@ -19,6 +19,15 @@ Theme = Literal["light", "dark"]
 GROUP_COLORS: dict[Theme, dict[str, str]] = {
     "light": {CONTROL: "#2a78d6", EXPERIMENTAL: "#eb6834"},
     "dark": {CONTROL: "#3987e5", EXPERIMENTAL: "#d95926"},
+}
+
+# Two steps of the same blue ramp, not two distinct hues: the A/A samples are
+# meant to be indistinguishable draws from one population, not two identities,
+# so giving them different colors like Control/Experimental would visually
+# imply a difference that should not be there.
+AA_SAMPLE_SHADES: dict[Theme, tuple[str, str]] = {
+    "light": ("#6da7ec", "#184f95"),
+    "dark": ("#86b6ef", "#1c5cab"),
 }
 
 INK: dict[Theme, dict[str, str]] = {
@@ -119,6 +128,63 @@ def histogram_by_group(
     fig.for_each_annotation(lambda note: note.update(text=note.text.split("=")[-1]))
     fig.update_layout(showlegend=False)
     return _style(fig, title, theme)
+
+
+def aa_samples_comparison(aa_test: pd.DataFrame, theme: Theme = "light") -> go.Figure:
+    """Box plot of the two A/A samples, with every point shown: both the raw
+    values and the visual comparison in one chart.
+    """
+    shade_1, shade_2 = AA_SAMPLE_SHADES[theme]
+
+    fig = go.Figure()
+    for column, color in zip(["Sample 1", "Sample 2"], [shade_1, shade_2]):
+        fig.add_trace(
+            go.Box(
+                y=aa_test[column],
+                name=column,
+                marker_color=color,
+                line_color=color,
+                boxpoints="all",
+                jitter=0.4,
+                pointpos=0,
+                marker_size=5,
+            )
+        )
+    fig.update_layout(showlegend=False)
+    fig.update_yaxes(title_text="Order value")
+    return _style(fig, "A/A samples: order value, every session shown", theme)
+
+
+def session_scatter(
+    ab_test: pd.DataFrame,
+    percentile: float = OUTLIER_PERCENTILE,
+    theme: Theme = "light",
+) -> go.Figure:
+    """Every session as one point: order value against session duration,
+    colored by group. Dashed lines mark the percentile cutoff used to trim
+    outliers; points beyond either line are the ones set aside.
+    """
+    ink = INK[theme]
+    thresholds = ab_test[["order_value", "session_duration"]].quantile(percentile / 100)
+
+    fig = px.scatter(
+        ab_test,
+        x="session_duration",
+        y="order_value",
+        color="group",
+        color_discrete_map=GROUP_COLORS[theme],
+        category_orders=GROUP_ORDER,
+        opacity=0.6,
+        labels={"session_duration": "Session duration", "order_value": "Order value", "group": ""},
+    )
+    fig.update_traces(marker=dict(size=6, line_width=0))
+    fig.add_hline(y=thresholds["order_value"], line=dict(color=ink["axis"], width=1, dash="dash"))
+    fig.add_vline(x=thresholds["session_duration"], line=dict(color=ink["axis"], width=1, dash="dash"))
+    # A handful of extreme order values would otherwise squash the rest of
+    # the points into an unreadable cluster near zero; a log axis (the same
+    # fix compare_aov's log transform applies) keeps every point visible.
+    fig.update_yaxes(type="log", dtick=1)  # major ticks only (1, 10, 100, ...)
+    return _style(fig, "Every session: order value vs. duration", theme)
 
 
 def log_order_value_histogram(df: pd.DataFrame, theme: Theme = "light") -> go.Figure:
