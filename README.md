@@ -61,11 +61,11 @@ The analysis follows a complete experimental pipeline:
 * NumPy  
 * SciPy  
 * statsmodels  
-* matplotlib  
+* Plotly  
 
 ## How to Run
 
-Run the script:
+Create a virtual environment and install the dependencies (developed with Python 3.13): `python -m venv .venv`, activate it, then `pip install -r requirements.txt`. Then run the script:
 
 ```bash
 python main.py
@@ -73,7 +73,7 @@ python main.py
 
 Ensure that both datasets (`aa_test.csv` and `ab_test.csv`) are located in the same directory as the script.
 
-All five stages will execute sequentially and display results.
+All five stages will execute sequentially and display results. Charts open in your browser and the script pauses between stages; use `python main.py --no-plots` for a text-only run.
 
 ## Notes
 
