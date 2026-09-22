@@ -27,6 +27,7 @@ dist/
 # Secrets / local config
 .env
 .env.*
+.streamlit/secrets.toml
 
 # Editors / IDEs
 .vscode/
